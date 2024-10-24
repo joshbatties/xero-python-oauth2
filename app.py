@@ -111,7 +111,7 @@ def tenants():
             organisations = accounting_api.get_organisations(
                 xero_tenant_id=connection.tenant_id
             )
-            tenant["organisations"] = serialize(organisations)
+            #tenant["organisations"] = serialize(organisations)
 
         available_tenants.append(tenant)
 
@@ -135,7 +135,7 @@ def create_contact_person():
         include_in_emails=True,
     )
     contact = Contact(
-        name="FooBar",
+        name="FooBar123",
         first_name="Foo",
         last_name="Bar",
         email_address="ben.bowden@24locks.com",
@@ -167,7 +167,7 @@ def create_multiple_contacts():
     accounting_api = AccountingApi(api_client)
 
     contact = Contact(
-        name="George Jetson",
+        name="George Jetson 123",
         first_name="George",
         last_name="Jetson",
         email_address="george.jetson@aol.com",
