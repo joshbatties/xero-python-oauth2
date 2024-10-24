@@ -3,11 +3,13 @@ import os
 from functools import wraps
 from io import BytesIO
 from logging.config import dictConfig
+from dateutil import parser
+
 
 from flask import Flask, url_for, render_template, session, redirect, json, send_file
 from flask_oauthlib.contrib.client import OAuth, OAuth2Application
 from flask_session import Session
-from xero_python.accounting import AccountingApi, ContactPerson, Contact, Contacts
+from xero_python.accounting import AccountingApi, ContactPerson, Contact, Contacts, Invoice, Invoices, LineItem
 from xero_python.api_client import ApiClient, serialize
 from xero_python.api_client.configuration import Configuration
 from xero_python.api_client.oauth2 import OAuth2Token
@@ -60,7 +62,6 @@ api_client = ApiClient(
     ),
     pool_threads=1,
 )
-
 
 # configure token persistence and exchange point between flask-oauthlib and xero-python
 @xero.tokengetter
@@ -284,6 +285,53 @@ def get_xero_tenant_id():
     for connection in identity_api.get_connections():
         if connection.tenant_type == "ORGANISATION":
             return connection.tenant_id
+
+
+@app.route('/create_invoice')
+@xero_token_required
+def create_invoice():
+    accounting_api = AccountingApi(api_client)
+    xero_tenant_id = get_xero_tenant_id()  # Get Tenant ID dynamically
+
+    # Dynamically retrieve a contact
+    try:
+        contacts = accounting_api.get_contacts(xero_tenant_id)
+        if contacts.contacts:
+            contact_id = contacts.contacts[0].contact_id  # Using the first contact
+        else:
+            return "No contacts found"
+    except Exception as e:
+        return f"Error fetching contacts: {e}"
+
+    # Invoice details
+    date_value = parser.parse('2024-10-24T00:00:00Z')
+    due_date_value = parser.parse('2024-11-24T00:00:00Z')
+    line_item = LineItem(description="Service", quantity=1.0, unit_amount=100.0)
+    invoice = Invoice(
+        type="ACCREC",
+        contact=Contact(contact_id=contact_id),
+        line_items=[line_item],
+        date=date_value,
+        due_date=due_date_value,
+        reference="Invoice Reference",
+        status="DRAFT"
+    )
+
+    # API call to create an invoice
+    try:
+        response = accounting_api.create_invoices(
+            xero_tenant_id,
+            invoices=Invoices(invoices=[invoice]),
+            summarize_errors=True,
+            idempotency_key='your_idempotency_key'
+        )
+        return str(response)
+    except Exception as e:
+        return f"Error creating invoice: {e}"
+
+
+
+
 
 
 if __name__ == '__main__':
