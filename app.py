@@ -323,7 +323,6 @@ def create_invoice():
             xero_tenant_id,
             invoices=Invoices(invoices=[invoice]),
             summarize_errors=True,
-            idempotency_key='your_idempotency_key'
         )
         return str(response)
     except Exception as e:
