@@ -4,6 +4,8 @@ from functools import wraps
 from io import BytesIO
 from logging.config import dictConfig
 from dateutil import parser
+from functools import wraps
+from datetime import datetime, timezone
 
 
 from flask import Flask, url_for, render_template, session, redirect, json, send_file
@@ -16,6 +18,7 @@ from xero_python.api_client.oauth2 import OAuth2Token
 from xero_python.exceptions import AccountingBadRequestException
 from xero_python.identity import IdentityApi
 from xero_python.utils import getvalue
+from xero_python.exceptions import XeroException
 
 import logging_settings
 from utils import jsonify, serialize_model
@@ -73,19 +76,21 @@ def obtain_xero_oauth2_token():
 @xero.tokensaver
 @api_client.oauth2_token_saver
 def store_xero_oauth2_token(token):
+    if token and 'expires_in' in token:
+        # Calculate absolute expiry time
+        token['expires_at'] = datetime.now(timezone.utc).timestamp() + token['expires_in']
     session["token"] = token
     session.modified = True
 
 
 def xero_token_required(function):
     @wraps(function)
+    @refresh_token_if_expired()  # Add this decorator to handle token refresh
     def decorator(*args, **kwargs):
         xero_token = obtain_xero_oauth2_token()
         if not xero_token:
             return redirect(url_for("login", _external=True))
-
         return function(*args, **kwargs)
-
     return decorator
 
 
@@ -327,6 +332,62 @@ def create_invoice():
         return str(response)
     except Exception as e:
         return f"Error creating invoice: {e}"
+
+class TokenRefreshError(Exception):
+    """Custom exception for token refresh failures"""
+    pass
+
+def is_token_expired(token):
+    """Check if the token is expired or will expire soon (within 30 seconds)"""
+    if not token or 'expires_at' not in token:
+        return True
+    
+    expires_at = datetime.fromtimestamp(token['expires_at'], timezone.utc)
+    now = datetime.now(timezone.utc)
+    # Add 30-second buffer to handle latency
+    return (expires_at - now).total_seconds() < 30
+
+def refresh_token_if_expired():
+    """Decorator to handle automatic token refresh"""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            max_retries = 1
+            retries = 0
+            
+            while retries <= max_retries:
+                try:
+                    token = obtain_xero_oauth2_token()
+                    
+                    # Check if token is expired or will expire soon
+                    if is_token_expired(token):
+                        try:
+                            new_token = api_client.refresh_oauth2_token()
+                            store_xero_oauth2_token(new_token)
+                        except Exception as e:
+                            raise TokenRefreshError(f"Failed to refresh token: {str(e)}")
+                    
+                    # Execute the original function
+                    return f(*args, **kwargs)
+                    
+                except XeroException as e:
+                    if hasattr(e, 'status') and e.status == 401 and retries < max_retries:  # Unauthorized
+                        try:
+                            new_token = api_client.refresh_oauth2_token()
+                            store_xero_oauth2_token(new_token)
+                            retries += 1
+                            continue
+                        except Exception as refresh_error:
+                            raise TokenRefreshError(f"Failed to refresh token after 401: {str(refresh_error)}")
+                    raise
+                
+                except TokenRefreshError:
+                    # If we can't refresh the token, redirect to login
+                    return redirect(url_for("login", _external=True))
+                    
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
 
 
 
