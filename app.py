@@ -153,7 +153,7 @@ class InvoiceProcessor:
             logger.error(f"Failed to get contact ID: {str(e)}")
             return None
 
-    def create_invoice(self, row: pd.Series, contact_id: str) -> Dict:
+    def create_invoice(self, row: pd.Series, contact_id: str):
         """Create an invoice object from row data"""
         try:
             line_items = []
