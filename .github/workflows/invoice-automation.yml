@@ -3,6 +3,7 @@ name: Invoice Automation
 on:
   schedule:
     - cron: '10 20 * * *'  # Adjust for 7:10 AM Melbourne Time in UTC
+  workflow_dispatch:
 
 jobs:
   build:
