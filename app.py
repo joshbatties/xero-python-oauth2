@@ -3,11 +3,11 @@ import sys
 import logging
 from datetime import datetime, timezone
 import traceback
-from typing import Optional
-import base64
+from typing import Optional, Dict
 
 import pandas as pd
 from dateutil import parser
+import requests
 from xero_python.api_client import Configuration, ApiClient
 from xero_python.api_client.oauth2 import OAuth2Token
 from xero_python.exceptions import ApiException
@@ -29,12 +29,13 @@ logger = logging.getLogger(__name__)
 
 class InvoiceProcessor:
     def __init__(self):
-        # Initialize Xero client
-        self.api_client = self._initialize_xero_client()
-        self.accounting_api = AccountingApi(self.api_client)
         self.tenant_id = os.environ.get('XERO_TENANT_ID', '').strip('"')
+        self.client_id = os.environ.get('XERO_CLIENT_ID', '').strip('"')
+        self.client_secret = os.environ.get('XERO_CLIENT_SECRET', '').strip('"')
         
-        # Initialize Google Sheets service
+        # Initialize services
+        self.api_client = None
+        self.accounting_api = None
         self.sheets_service = self._initialize_sheets_service()
         
         # Charge descriptions mapping
@@ -51,33 +52,47 @@ class InvoiceProcessor:
             'TRN': 'Transportation'
         }
 
-    def _initialize_xero_client(self) -> ApiClient:
-        """Initialize and return Xero API client"""
+    def _get_xero_access_token(self) -> str:
+        """Get access token directly from Xero"""
         try:
-            client_id = os.environ.get('XERO_CLIENT_ID', '').strip('"')
-            client_secret = os.environ.get('XERO_CLIENT_SECRET', '').strip('"')
+            logger.info("Getting Xero access token...")
             
-            if not client_id or not client_secret:
-                raise ValueError("Xero credentials not found in environment variables")
-            
-            logger.info("Initializing Xero client...")
-            
-            # Create client configuration
-            api_config = Configuration(
-                oauth2_token=OAuth2Token(
-                    client_id=client_id,
-                    client_secret=client_secret
-                )
+            token_url = 'https://identity.xero.com/connect/token'
+            response = requests.post(
+                token_url,
+                auth=(self.client_id, self.client_secret),
+                data={
+                    'grant_type': 'client_credentials',
+                    'scope': 'accounting.transactions accounting.contacts.read offline_access'
+                }
             )
             
-            # Configure xero-python sdk client
-            api_client = ApiClient(
-                api_config,
-                oauth2_token_saver=lambda x: None,  # No need to save token in GitHub Actions
-                oauth2_token_getter=lambda: None
+            if response.status_code != 200:
+                raise Exception(f"Failed to get access token. Status: {response.status_code}, Response: {response.text}")
+            
+            token_data = response.json()
+            access_token = token_data.get('access_token')
+            
+            if not access_token:
+                raise Exception("No access token in response")
+                
+            logger.info("Successfully obtained access token")
+            return access_token
+            
+        except Exception as e:
+            logger.error(f"Error getting access token: {str(e)}")
+            raise
+
+    def _initialize_xero_client(self, access_token: str) -> None:
+        """Initialize Xero API client with access token"""
+        try:
+            configuration = Configuration(
+                access_token=access_token
             )
             
-            return api_client
+            self.api_client = ApiClient(configuration)
+            self.accounting_api = AccountingApi(self.api_client)
+            logger.info("Successfully initialized Xero client")
             
         except Exception as e:
             logger.error(f"Failed to initialize Xero client: {str(e)}")
@@ -108,16 +123,14 @@ class InvoiceProcessor:
         try:
             logger.info("Authenticating with Xero...")
             
-            # Get client credentials token
-            token = self.api_client.get_client_credentials_token()
-            logger.info("Successfully obtained access token")
+            # Get access token
+            access_token = self._get_xero_access_token()
             
-            # Set the token directly on the configuration
-            self.api_client.configuration.access_token = token.get('access_token')
+            # Initialize client with token
+            self._initialize_xero_client(access_token)
             
             # Verify tenant ID
             if not self.tenant_id:
-                # Get the first organization's tenant ID if not provided
                 identity_api = IdentityApi(self.api_client)
                 connections = identity_api.get_connections()
                 for connection in connections:
@@ -128,6 +141,7 @@ class InvoiceProcessor:
                 if not self.tenant_id:
                     raise ValueError("No valid Xero organization found")
             
+            logger.info("Successfully authenticated with Xero")
             return True
             
         except Exception as e:
