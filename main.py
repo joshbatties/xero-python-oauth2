@@ -181,7 +181,7 @@ def main():
         client_id = os.getenv('XERO_CLIENT_ID')
         client_secret = os.getenv('XERO_CLIENT_SECRET')
         access_token = os.getenv('XERO_ACCESS_TOKEN')
-        refresh_token = os.getenv('XERO_REFRESH_TOKEN')
+        refresh_token = os.getenv('REFRESH_TOKEN')
         tenant_id = os.getenv('XERO_TENANT_ID')
         spreadsheet_id = os.getenv('GOOGLE_SHEETS_SPREADSHEET_ID')
 
