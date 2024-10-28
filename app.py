@@ -57,17 +57,23 @@ class InvoiceProcessor:
         try:
             logger.info("Getting Xero access token...")
             
+            # Set the correct scopes as a single space-separated string
+            scopes = 'offline_access openid profile email accounting.transactions accounting.contacts.read'
+            
             token_url = 'https://identity.xero.com/connect/token'
             response = requests.post(
                 token_url,
                 auth=(self.client_id, self.client_secret),
                 data={
                     'grant_type': 'client_credentials',
-                    'scope': 'accounting.transactions accounting.contacts.read offline_access'
+                    'scope': scopes
                 }
             )
             
+            logger.info(f"Token request status: {response.status_code}")
+            
             if response.status_code != 200:
+                logger.error(f"Token response: {response.text}")
                 raise Exception(f"Failed to get access token. Status: {response.status_code}, Response: {response.text}")
             
             token_data = response.json()
