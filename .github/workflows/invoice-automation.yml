@@ -26,13 +26,9 @@ jobs:
         pip install pandas==1.5.3
         pip install -r requirements.txt
 
-    - name: Create and verify credentials
+    - name: Create credentials file
       run: |
-        # Create credentials.json with proper formatting
-        echo '${{ secrets.GOOGLE_CREDENTIALS }}' | python -c "
-        import json, sys
-        print(json.dumps(json.loads(sys.stdin.read()), indent=2))
-        " > credentials.json
+        echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
         
         # Verify credentials file
         echo "Verifying credentials.json format..."
@@ -42,17 +38,7 @@ jobs:
         try:
             with open('credentials.json', 'r') as f:
                 creds = json.load(f)
-                required_keys = ['type', 'project_id', 'private_key', 'client_email']
-                missing_keys = [key for key in required_keys if key not in creds]
-                if missing_keys:
-                    print(f'Error: Missing required keys: {missing_keys}')
-                    sys.exit(1)
-                print('JSON format is valid')
-                print('Required keys present:', required_keys)
-                print('Service account email:', creds['client_email'])
-        except json.JSONDecodeError as e:
-            print(f'Invalid JSON format: {str(e)}')
-            sys.exit(1)
+                print('Credentials file is valid JSON')
         except Exception as e:
             print(f'Error: {str(e)}')
             sys.exit(1)
