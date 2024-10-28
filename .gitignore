@@ -5,3 +5,57 @@ __pycache__/
 
 .DS_Store
 .vscode/*
+# Python-related files
+*.pyc
+*.pyo
+__pycache__/
+*.pyd
+
+# Environment Variables
+.env
+
+# Flask Session Files
+flask_session/
+
+# Google Credentials
+credentials.json
+
+# Config Files (containing secrets)
+config.py
+*.ini
+*.cfg
+
+# Debug Logs
+*.log
+
+# Xero Token Export
+oauth2_token.py
+
+# Virtual Environment
+venv/
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-workspace
+
+# Byte-compiled / optimized / DLL files
+*.pyc
+*.pyo
+*.pyd
+
+# Distribution / packaging
+.Python
+env/
+build/
+dist/
+*.egg-info/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+credentials.json
