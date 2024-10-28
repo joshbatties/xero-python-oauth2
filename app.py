@@ -4,13 +4,14 @@ import logging
 from datetime import datetime, timezone
 import traceback
 from typing import Optional
+import requests
+import json
 
 import pandas as pd
 from dateutil import parser
 from xero_python.accounting import AccountingApi, Contact, Contacts, Invoice, Invoices, LineItem, LineAmountTypes
 from xero_python.api_client import ApiClient
 from xero_python.api_client.configuration import Configuration
-from xero_python.api_client.oauth2 import OAuth2Token
 from xero_python.identity import IdentityApi
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -28,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 class InvoiceProcessor:
     def __init__(self):
-        # Initialize Xero client
-        self.api_client = self._initialize_xero_client()
+        self.access_token = None
+        self.api_client = None
         self.tenant_id = None
         self.accounting_api = None
         
@@ -50,50 +51,59 @@ class InvoiceProcessor:
             'TRN': 'Transportation'
         }
 
-    def _save_token(self, token):
-        """Token saver function for OAuth2"""
-        logger.info("Saving token...")
-        self._current_token = token
-        return token
-
-    def _initialize_xero_client(self) -> ApiClient:
-        """Initialize and return Xero API client"""
+    def _get_xero_token(self):
+        """Get access token from Xero using client credentials"""
         try:
-            client_id = os.environ.get('XERO_CLIENT_ID')
-            client_secret = os.environ.get('XERO_CLIENT_SECRET')
+            client_id = os.environ.get('XERO_CLIENT_ID', '').strip('"')
+            client_secret = os.environ.get('XERO_CLIENT_SECRET', '').strip('"')
             
             if not client_id or not client_secret:
                 raise ValueError("Xero credentials not found in environment variables")
             
-            # Remove quotes if they exist
-            client_id = client_id.strip('"')
-            client_secret = client_secret.strip('"')
+            logger.info("Getting Xero access token...")
             
-            logger.info("Initializing Xero client...")
+            token_url = 'https://identity.xero.com/connect/token'
             
-            # Create OAuth2Token instance
-            oauth2_token = OAuth2Token(
-                client_id=client_id,
-                client_secret=client_secret
+            response = requests.post(
+                token_url,
+                auth=(client_id, client_secret),
+                data={
+                    'grant_type': 'client_credentials',
+                    'scope': 'accounting.transactions accounting.contacts.read offline_access'
+                }
             )
             
-            # Create Configuration
-            config = Configuration(
-                debug=False,
-                oauth2_token=oauth2_token
+            if response.status_code != 200:
+                logger.error(f"Token request failed: {response.text}")
+                raise Exception(f"Failed to get token: {response.status_code}")
+                
+            token_data = response.json()
+            self.access_token = token_data['access_token']
+            logger.info("Successfully obtained access token")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error getting token: {str(e)}")
+            return False
+
+    def _initialize_xero_client(self):
+        """Initialize Xero API client with access token"""
+        try:
+            configuration = Configuration(
+                access_token=self.access_token,
+                debug=False
             )
             
-            # Create API client
-            api_client = ApiClient(config, pool_threads=1)
+            self.api_client = ApiClient(configuration)
+            self.accounting_api = AccountingApi(self.api_client)
+            logger.info("Successfully initialized Xero client")
             
-            # Set the token saver
-            api_client.oauth2_token_saver = self._save_token
-            
-            return api_client
+            return True
             
         except Exception as e:
             logger.error(f"Failed to initialize Xero client: {str(e)}")
-            raise
+            return False
 
     def _initialize_sheets_service(self):
         """Initialize and return Google Sheets service"""
@@ -118,29 +128,32 @@ class InvoiceProcessor:
     def authenticate_xero(self) -> bool:
         """Authenticate with Xero and get tenant ID"""
         try:
-            logger.info("Authenticating with Xero...")
+            logger.info("Starting Xero authentication...")
             
-            # Get access token using client credentials
-            token = self.api_client.get_client_credentials_token()
-            logger.info("Successfully obtained access token")
+            # Get access token
+            if not self._get_xero_token():
+                return False
+                
+            # Initialize client with token
+            if not self._initialize_xero_client():
+                return False
             
-            # Initialize the APIs with the authenticated client
+            # Get tenant ID
             identity_api = IdentityApi(self.api_client)
-            self.accounting_api = AccountingApi(self.api_client)
-            
-            # Get the first organization's tenant ID
             connections = identity_api.get_connections()
+            
             for connection in connections:
                 if connection.tenant_type == "ORGANISATION":
                     self.tenant_id = connection.tenant_id
                     logger.info(f"Successfully authenticated with Xero. Tenant ID: {self.tenant_id}")
                     return True
-                    
+            
             logger.error("No valid Xero organization found")
             return False
             
         except Exception as e:
             logger.error(f"Failed to authenticate with Xero: {str(e)}")
+            logger.error(traceback.format_exc())
             return False
 
     def get_contact_id(self) -> Optional[str]:
