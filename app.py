@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import os
 import sys
 import logging
@@ -8,7 +7,6 @@ from typing import Optional
 
 import pandas as pd
 from dateutil import parser
-from flask import Flask
 from xero_python.accounting import AccountingApi, Contact, Contacts, Invoice, Invoices, LineItem, LineAmountTypes
 from xero_python.api_client import ApiClient
 from xero_python.api_client.configuration import Configuration
@@ -28,11 +26,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class AutomatedInvoiceProcessor:
+class InvoiceProcessor:
     def __init__(self):
-        self.app = Flask(__name__)
-        self.app.config.from_pyfile("config.py")
-        
         # Initialize Xero client
         self.api_client = self._initialize_xero_client()
         self.tenant_id = None
@@ -58,17 +53,30 @@ class AutomatedInvoiceProcessor:
     def _initialize_xero_client(self) -> ApiClient:
         """Initialize and return Xero API client"""
         try:
+            client_id = os.environ.get('XERO_CLIENT_ID')
+            client_secret = os.environ.get('XERO_CLIENT_SECRET')
+            
+            if not client_id or not client_secret:
+                raise ValueError("Xero credentials not found in environment variables")
+            
+            # Remove quotes if they exist
+            client_id = client_id.strip('"')
+            client_secret = client_secret.strip('"')
+            
+            logger.info(f"Initializing Xero client...")
+            
             token = OAuth2Token(
-                client_id=self.app.config["CLIENT_ID"],
-                client_secret=self.app.config["CLIENT_SECRET"]
+                client_id=client_id,
+                client_secret=client_secret
             )
             
             config = Configuration(
-                debug=self.app.config["DEBUG"],
+                debug=False,
                 oauth2_token=token
             )
             
             return ApiClient(config, pool_threads=1)
+            
         except Exception as e:
             logger.error(f"Failed to initialize Xero client: {str(e)}")
             raise
@@ -76,26 +84,29 @@ class AutomatedInvoiceProcessor:
     def _initialize_sheets_service(self):
         """Initialize and return Google Sheets service"""
         try:
-            credentials_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), 
-                'credentials.json'
-            )
+            logger.info("Initializing Google Sheets service...")
+            
+            credentials_path = 'credentials.json'
+            if not os.path.exists(credentials_path):
+                raise FileNotFoundError("credentials.json not found")
             
             credentials = service_account.Credentials.from_service_account_file(
                 credentials_path,
-                scopes=['https://www.googleapis.com/auth/spreadsheets']
+                scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
             )
             
             return build('sheets', 'v4', credentials=credentials)
+            
         except Exception as e:
             logger.error(f"Failed to initialize Google Sheets service: {str(e)}")
             raise
 
-    async def authenticate_xero(self) -> bool:
+    def authenticate_xero(self) -> bool:
         """Authenticate with Xero and get tenant ID"""
         try:
             # Get access token using client credentials
-            token = await self.api_client.get_client_credentials_token()
+            logger.info("Authenticating with Xero...")
+            token = self.api_client.get_client_credentials_token()
             
             # Set the token
             self.api_client.configuration.oauth2_token = token
@@ -117,7 +128,7 @@ class AutomatedInvoiceProcessor:
             
         except Exception as e:
             logger.error(f"Failed to authenticate with Xero: {str(e)}")
-            return False
+            raise
 
     def get_contact_id(self) -> Optional[str]:
         """Get the first contact ID from Xero"""
@@ -134,9 +145,18 @@ class AutomatedInvoiceProcessor:
             logger.error(f"Failed to get contact ID: {str(e)}")
             return None
 
-    def get_sheet_data(self, spreadsheet_id: str):
+    def get_sheet_data(self):
         """Fetch data from Google Sheets"""
         try:
+            spreadsheet_id = os.environ.get('GOOGLE_SHEETS_SPREADSHEET_ID')
+            if not spreadsheet_id:
+                raise ValueError("GOOGLE_SHEETS_SPREADSHEET_ID not found in environment variables")
+            
+            # Remove quotes if they exist
+            spreadsheet_id = spreadsheet_id.strip('"')
+            
+            logger.info(f"Fetching data from Google Sheets...")
+            
             result = self.sheets_service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id,
                 range='Sheet1'
@@ -160,7 +180,8 @@ class AutomatedInvoiceProcessor:
             
             # Convert charge columns to float
             for charge_code in self.charge_descriptions.keys():
-                df[charge_code] = pd.to_numeric(df[charge_code], errors='coerce').fillna(0)
+                if charge_code in df.columns:
+                    df[charge_code] = pd.to_numeric(df[charge_code], errors='coerce').fillna(0)
             
             logger.info(f"Successfully processed {len(df)} rows of data")
             return df
@@ -175,22 +196,23 @@ class AutomatedInvoiceProcessor:
         is_credit_note = row['Type'].upper() == 'CRD'
         
         for code, description in self.charge_descriptions.items():
-            amount = float(row.get(code, 0))
-            if amount != 0:
-                if is_credit_note:
-                    amount = -abs(amount)
-                else:
-                    amount = abs(amount)
+            if code in row:
+                amount = float(row[code])
+                if amount != 0:
+                    if is_credit_note:
+                        amount = -abs(amount)
+                    else:
+                        amount = abs(amount)
                     
-                line_item = LineItem(
-                    description=f"{description} - {row['Job Invoice #']}",
-                    quantity=1.0,
-                    unit_amount=amount,
-                    account_code="200",
-                    tax_type="NONE",
-                    line_amount=amount
-                )
-                line_items.append(line_item)
+                    line_item = LineItem(
+                        description=f"{description} - {row['Job Invoice #']}",
+                        quantity=1.0,
+                        unit_amount=amount,
+                        account_code="200",
+                        tax_type="NONE",
+                        line_amount=amount
+                    )
+                    line_items.append(line_item)
         return line_items
 
     def create_invoice(self, row: pd.Series, contact_id: str) -> Invoice:
@@ -225,13 +247,13 @@ class AutomatedInvoiceProcessor:
             logger.error(f"Failed to create invoice object: {str(e)}")
             raise
 
-    async def run(self):
+    def run(self):
         """Main execution function"""
         try:
             logger.info("Starting automated invoice processing")
             
             # Authenticate with Xero
-            if not await self.authenticate_xero():
+            if not self.authenticate_xero():
                 logger.error("Failed to authenticate with Xero")
                 return False
                 
@@ -241,14 +263,8 @@ class AutomatedInvoiceProcessor:
                 logger.error("Failed to get contact ID")
                 return False
                 
-            # Get spreadsheet ID from environment
-            spreadsheet_id = os.getenv('GOOGLE_SHEETS_SPREADSHEET_ID')
-            if not spreadsheet_id:
-                logger.error("Spreadsheet ID not configured")
-                return False
-                
             # Get and process sheet data
-            sheet_data = self.get_sheet_data(spreadsheet_id)
+            sheet_data = self.get_sheet_data()
             df = self.process_spreadsheet_data(sheet_data)
             
             # Process each row
@@ -302,7 +318,11 @@ class AutomatedInvoiceProcessor:
             return False
 
 if __name__ == '__main__':
-    processor = AutomatedInvoiceProcessor()
-    import asyncio
-    success = asyncio.run(processor.run())
-    sys.exit(0 if success else 1)
+    try:
+        processor = InvoiceProcessor()
+        success = processor.run()
+        sys.exit(0 if success else 1)
+    except Exception as e:
+        logger.error(f"Fatal error: {str(e)}")
+        logger.error(traceback.format_exc())
+        sys.exit(1)
