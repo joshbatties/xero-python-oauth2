@@ -18,7 +18,7 @@ from xero_python.api_client.oauth2 import OAuth2Token
 from xero_python.exceptions import AccountingBadRequestException
 from xero_python.identity import IdentityApi
 from xero_python.utils import getvalue
-from xero_python.exceptions import XeroException
+from xero_python.exceptions import ApiException
 
 import logging_settings
 from utils import jsonify, serialize_model
@@ -91,6 +91,47 @@ def xero_token_required(function):
         if not xero_token:
             return redirect(url_for("login", _external=True))
         return function(*args, **kwargs)
+    return decorator
+def refresh_token_if_expired():
+    """Decorator to handle automatic token refresh"""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            max_retries = 1
+            retries = 0
+            
+            while retries <= max_retries:
+                try:
+                    token = obtain_xero_oauth2_token()
+                    
+                    # Check if token is expired or will expire soon
+                    if is_token_expired(token):
+                        try:
+                            new_token = api_client.refresh_oauth2_token()
+                            store_xero_oauth2_token(new_token)
+                        except Exception as e:
+                            raise TokenRefreshError(f"Failed to refresh token: {str(e)}")
+                    
+                    # Execute the original function
+                    return f(*args, **kwargs)
+                    
+                except ApiException as e:
+                    if hasattr(e, 'status') and e.status == 401 and retries < max_retries:  # Unauthorized
+                        try:
+                            new_token = api_client.refresh_oauth2_token()
+                            store_xero_oauth2_token(new_token)
+                            retries += 1
+                            continue
+                        except Exception as refresh_error:
+                            raise TokenRefreshError(f"Failed to refresh token after 401: {str(refresh_error)}")
+                    raise
+                
+                except TokenRefreshError:
+                    # If we can't refresh the token, redirect to login
+                    return redirect(url_for("login", _external=True))
+                    
+            return f(*args, **kwargs)
+        return decorated_function
     return decorator
 
 
