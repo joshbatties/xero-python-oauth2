@@ -30,21 +30,28 @@ jobs:
 
     - name: Create config files
       run: |
-        echo "${{ secrets.XERO_CONFIG }}" > config.py
+        cat > config.py << EOL
+        CLIENT_ID = "${XERO_CLIENT_ID}"
+        CLIENT_SECRET = "${XERO_CLIENT_SECRET}"
+        DEBUG = False
+        EOL
         echo "${{ secrets.GOOGLE_CREDENTIALS }}" > credentials.json
+      env:
+        XERO_CLIENT_ID: "${{ secrets.XERO_CLIENT_ID }}"
+        XERO_CLIENT_SECRET: "${{ secrets.XERO_CLIENT_SECRET }}"
+
+    - name: Verify config files
+      run: |
+        echo "Checking for config files..."
+        echo "Content of config.py:"
+        cat config.py
+        echo "Checking credentials.json exists:"
+        ls -la credentials.json
 
     - name: Run invoice creation
       env:
         GOOGLE_SHEETS_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
-      run: |
-        python -c "
-        import sys
-        import os
-        print('Python version:', sys.version)
-        print('Current working directory:', os.getcwd())
-        print('Directory contents:', os.listdir('.'))
-        "
-        python app.py
+      run: python app.py
 
     - name: Upload logs
       if: always()
