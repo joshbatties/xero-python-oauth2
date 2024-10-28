@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 import traceback
 from typing import Optional
+import base64
 
 import pandas as pd
 from dateutil import parser
@@ -28,13 +29,10 @@ logger = logging.getLogger(__name__)
 
 class InvoiceProcessor:
     def __init__(self):
-        # Initialize token storage
-        self.xero_oauth2_token = {}
-        
         # Initialize Xero client
         self.api_client = self._initialize_xero_client()
         self.accounting_api = AccountingApi(self.api_client)
-        self.tenant_id = None
+        self.tenant_id = os.environ.get('XERO_TENANT_ID', '').strip('"')
         
         # Initialize Google Sheets service
         self.sheets_service = self._initialize_sheets_service()
@@ -75,8 +73,8 @@ class InvoiceProcessor:
             # Configure xero-python sdk client
             api_client = ApiClient(
                 api_config,
-                oauth2_token_saver=lambda x: self.xero_oauth2_token.update(x),
-                oauth2_token_getter=lambda: self.xero_oauth2_token
+                oauth2_token_saver=lambda x: None,  # No need to save token in GitHub Actions
+                oauth2_token_getter=lambda: None
             )
             
             return api_client
@@ -106,311 +104,97 @@ class InvoiceProcessor:
             raise
 
     def authenticate_xero(self) -> bool:
-        """Authenticate with Xero and get tenant ID"""
+        """Authenticate with Xero"""
         try:
             logger.info("Authenticating with Xero...")
             
             # Get client credentials token
-            self.api_client.get_client_credentials_token()
+            token = self.api_client.get_client_credentials_token()
+            logger.info("Successfully obtained access token")
             
-            # Initialize APIs
-            identity_api = IdentityApi(self.api_client)
+            # Set the token directly on the configuration
+            self.api_client.configuration.access_token = token.get('access_token')
             
-            # Get the first organization's tenant ID
-            connections = identity_api.get_connections()
-            for connection in connections:
-                if connection.tenant_type == "ORGANISATION":
-                    self.tenant_id = connection.tenant_id
-                    logger.info(f"Successfully authenticated with Xero. Tenant ID: {self.tenant_id}")
-                    return True
-                    
-            logger.error("No valid Xero organization found")
-            return False
+            # Verify tenant ID
+            if not self.tenant_id:
+                # Get the first organization's tenant ID if not provided
+                identity_api = IdentityApi(self.api_client)
+                connections = identity_api.get_connections()
+                for connection in connections:
+                    if connection.tenant_type == "ORGANISATION":
+                        self.tenant_id = connection.tenant_id
+                        logger.info(f"Using tenant ID: {self.tenant_id}")
+                        break
+                if not self.tenant_id:
+                    raise ValueError("No valid Xero organization found")
             
-        except Exception as e:
-            logger.error(f"Failed to authenticate with Xero: {str(e)}")
-            return False
-
-    def get_sheet_data(self):
-        """Fetch data from Google Sheets"""
-        try:
-            spreadsheet_id = os.environ.get('GOOGLE_SHEETS_SPREADSHEET_ID', '').strip('"')
-            if not spreadsheet_id:
-                raise ValueError("GOOGLE_SHEETS_SPREADSHEET_ID not found in environment variables")
-            
-            logger.info(f"Fetching data from Google Sheets...")
-            
-            result = self.sheets_service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id,
-                range='Sheet1'
-            ).execute()
-            
-            values = result.get('values', [])
-            if not values:
-                raise ValueError("No data found in spreadsheet")
-                
-            logger.info(f"Successfully fetched {len(values)} rows from Google Sheets")
-            return values
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch spreadsheet data: {str(e)}")
-            raise
-
-    def process_spreadsheet_data(self, sheet_data) -> pd.DataFrame:
-        """Process raw sheet data into a DataFrame"""
-        try:
-            df = pd.DataFrame(sheet_data[1:], columns=sheet_data[0])
-            
-            # Convert charge columns to float
-            for charge_code in self.charge_descriptions.keys():
-                if charge_code in df.columns:
-                    df[charge_code] = pd.to_numeric(df[charge_code], errors='coerce').fillna(0)
-            
-            logger.info(f"Successfully processed {len(df)} rows of data")
-            return df
-            
-        except Exception as e:
-            logger.error(f"Failed to process spreadsheet data: {str(e)}")
-            raise
-
-    def create_line_items(self, row: pd.Series) -> list[LineItem]:
-        """Create line items for an invoice"""
-        line_items = []
-        is_credit_note = row['Type'].upper() == 'CRD'
-        
-        for code, description in self.charge_descriptions.items():
-            if code in row:
-                amount = float(row[code])
-                if amount != 0:
-                    if is_credit_note:
-                        amount = -abs(amount)
-                    else:
-                        amount = abs(amount)
-                    
-                    line_item = LineItem(
-                        description=f"{description} - {row['Job Invoice #']}",
-                        quantity=1.0,
-                        unit_amount=amount,
-                        account_code="200",
-                        tax_type="NONE",
-                        line_amount=amount
-                    )
-                    line_items.append(line_item)
-        return line_items
-
-    def create_invoice(self, row: pd.Series, contact_id: str) -> Invoice:
-        """Create an invoice object from row data"""
-        try:
-            line_items = self.create_line_items(row)
-            if not line_items:
-                raise ValueError(f"No valid charges found for shipment {row['Shipment']}")
-
-            # Parse dates
-            month, day, year = map(int, row['Inv. Date'].split('/'))
-            date_str = f"{year}-{month:02d}-{day:02d}T00:00:00Z"
-            date_value = parser.parse(date_str)
-            
-            due_date = date_value + pd.Timedelta(days=30)
-            due_date_str = due_date.strftime('%Y-%m-%dT00:00:00Z')
-            due_date_value = parser.parse(due_date_str)
-
-            is_credit_note = row['Type'].upper() == 'CRD'
-            
-            return Invoice(
-                type="ACCRECCREDIT" if is_credit_note else "ACCREC",
-                contact=Contact(contact_id=contact_id),
-                line_items=line_items,
-                date=date_value,
-                due_date=due_date_value,
-                reference=row['Job Invoice #'],
-                status="DRAFT",
-                line_amount_types=LineAmountTypes.EXCLUSIVE
-            )
-        except Exception as e:
-            logger.error(f"Failed to create invoice object: {str(e)}")
-            raise
-
-    def run(self):
-        """Main execution function"""
-        try:
-            logger.info("Starting automated invoice processing")
-            
-            # Authenticate with Xero
-            if not self.authenticate_xero():
-                logger.error("Failed to authenticate with Xero")
-                return False
-            
-            # Get and process sheet data
-            sheet_data = self.get_sheet_data()
-            df = self.process_spreadsheet_data(sheet_data)
-            
-            # Get contact ID
-            try:
-                contacts = self.accounting_api.get_contacts(self.tenant_id)
-                if not contacts.contacts:
-                    logger.error("No contacts found in Xero")
-                    return False
-                contact_id = contacts.contacts[0].contact_id
-                logger.info(f"Using contact ID: {contact_id}")
-            except ApiException as e:
-                logger.error(f"Failed to get contacts: {str(e)}")
-                return False
-            
-            # Process each row
-            results = []
-            for idx, row in df.iterrows():
-                try:
-                    logger.info(f"Processing invoice {row['Job Invoice #']}")
-                    
-                    # Create and submit invoice
-                    invoice = self.create_invoice(row, contact_id)
-                    response = self.accounting_api.create_invoices(
-                        self.tenant_id,
-                        invoices=Invoices(invoices=[invoice]),
-                        summarize_errors=False
-                    )
-                    
-                    # Record success
-                    invoice_id = response.invoices[0].invoice_id if response.invoices else None
-                    results.append({
-                        'shipment': row['Shipment'],
-                        'job_invoice': row['Job Invoice #'],
-                        'status': 'success',
-                        'type': row['Type'],
-                        'invoice_id': invoice_id,
-                        'amount': float(row.get('Total Invoice', 0)),
-                        'date': row['Inv. Date']
-                    })
-                    logger.info(f"Successfully created invoice {invoice_id}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to process row {idx + 2}: {str(e)}")
-                    results.append({
-                        'shipment': row['Shipment'],
-                        'job_invoice': row['Job Invoice #'],
-                        'status': 'error',
-                        'type': row['Type'],
-                        'error': str(e)
-                    })
-            
-            # Log summary
-            successful = sum(1 for r in results if r['status'] == 'success')
-            failed = sum(1 for r in results if r['status'] == 'error')
-            total_amount = sum(float(r.get('amount', 0)) for r in results if r['status'] == 'success')
-            
-            logger.info(f"Processing complete. Successful: {successful}, Failed: {failed}, Total Amount: {total_amount}")
             return True
             
         except Exception as e:
-            logger.error(f"Automation failed: {str(e)}")
+            logger.error(f"Failed to authenticate with Xero: {str(e)}")
             logger.error(traceback.format_exc())
             return False
 
-if __name__ == '__main__':
-    try:
-        processor = InvoiceProcessor()
-        success = processor.run()
-        sys.exit(0 if success else 1)
-    except Exception as e:
-        logger.error(f"Fatal error: {str(e)}")
-        logger.error(traceback.format_exc())
-        sys.exit(1)
-
-    def get_sheet_data(self):
-        """Fetch data from Google Sheets"""
+    def get_contact_id(self) -> Optional[str]:
+        """Get the first contact ID from Xero"""
         try:
-            spreadsheet_id = os.environ.get('GOOGLE_SHEETS_SPREADSHEET_ID', '').strip('"')
-            if not spreadsheet_id:
-                raise ValueError("GOOGLE_SHEETS_SPREADSHEET_ID not found in environment variables")
-            
-            logger.info(f"Fetching data from Google Sheets...")
-            
-            result = self.sheets_service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id,
-                range='Sheet1'
-            ).execute()
-            
-            values = result.get('values', [])
-            if not values:
-                raise ValueError("No data found in spreadsheet")
-                
-            logger.info(f"Successfully fetched {len(values)} rows from Google Sheets")
-            return values
-            
+            logger.info(f"Getting contacts for tenant {self.tenant_id}")
+            contacts = self.accounting_api.get_contacts(
+                xero_tenant_id=self.tenant_id
+            )
+            if contacts.contacts:
+                contact_id = contacts.contacts[0].contact_id
+                logger.info(f"Using contact ID: {contact_id}")
+                return contact_id
+            else:
+                logger.error("No contacts found in Xero")
+                return None
         except Exception as e:
-            logger.error(f"Failed to fetch spreadsheet data: {str(e)}")
-            raise
+            logger.error(f"Failed to get contact ID: {str(e)}")
+            return None
 
-    def process_spreadsheet_data(self, sheet_data) -> pd.DataFrame:
-        """Process raw sheet data into a DataFrame"""
-        try:
-            df = pd.DataFrame(sheet_data[1:], columns=sheet_data[0])
-            
-            # Convert charge columns to float
-            for charge_code in self.charge_descriptions.keys():
-                if charge_code in df.columns:
-                    df[charge_code] = pd.to_numeric(df[charge_code], errors='coerce').fillna(0)
-            
-            logger.info(f"Successfully processed {len(df)} rows of data")
-            return df
-            
-        except Exception as e:
-            logger.error(f"Failed to process spreadsheet data: {str(e)}")
-            raise
-
-    def create_line_items(self, row: pd.Series) -> list[LineItem]:
-        """Create line items for an invoice"""
-        line_items = []
-        is_credit_note = row['Type'].upper() == 'CRD'
-        
-        for code, description in self.charge_descriptions.items():
-            if code in row:
-                amount = float(row[code])
-                if amount != 0:
-                    if is_credit_note:
-                        amount = -abs(amount)
-                    else:
-                        amount = abs(amount)
-                    
-                    line_item = LineItem(
-                        description=f"{description} - {row['Job Invoice #']}",
-                        quantity=1.0,
-                        unit_amount=amount,
-                        account_code="200",
-                        tax_type="NONE",
-                        line_amount=amount
-                    )
-                    line_items.append(line_item)
-        return line_items
-
-    def create_invoice(self, row: pd.Series, contact_id: str) -> Invoice:
+    def create_invoice(self, row: pd.Series, contact_id: str) -> Dict:
         """Create an invoice object from row data"""
         try:
-            line_items = self.create_line_items(row)
+            line_items = []
+            for code, description in self.charge_descriptions.items():
+                if code in row and float(row[code]) != 0:
+                    amount = float(row[code])
+                    if row['Type'].upper() == 'CRD':
+                        amount = -abs(amount)
+                    
+                    line_items.append({
+                        "Description": f"{description} - {row['Job Invoice #']}",
+                        "Quantity": 1.0,
+                        "UnitAmount": amount,
+                        "AccountCode": "200",
+                        "TaxType": "NONE",
+                        "LineAmount": amount
+                    })
+
             if not line_items:
                 raise ValueError(f"No valid charges found for shipment {row['Shipment']}")
 
             # Parse dates
             month, day, year = map(int, row['Inv. Date'].split('/'))
-            date_str = f"{year}-{month:02d}-{day:02d}T00:00:00Z"
-            date_value = parser.parse(date_str)
-            
-            due_date = date_value + pd.Timedelta(days=30)
-            due_date_str = due_date.strftime('%Y-%m-%dT00:00:00Z')
-            due_date_value = parser.parse(due_date_str)
+            date_str = f"{year}-{month:02d}-{day:02d}"
+            due_date = pd.to_datetime(date_str) + pd.Timedelta(days=30)
+            due_date_str = due_date.strftime('%Y-%m-%d')
 
-            is_credit_note = row['Type'].upper() == 'CRD'
+            invoice_data = {
+                "Invoices": [{
+                    "Type": "ACCRECCREDIT" if row['Type'].upper() == 'CRD' else "ACCREC",
+                    "Contact": {"ContactID": contact_id},
+                    "LineItems": line_items,
+                    "Date": date_str,
+                    "DueDate": due_date_str,
+                    "Reference": row['Job Invoice #'],
+                    "Status": "DRAFT"
+                }]
+            }
             
-            return Invoice(
-                type="ACCRECCREDIT" if is_credit_note else "ACCREC",
-                contact=Contact(contact_id=contact_id),
-                line_items=line_items,
-                date=date_value,
-                due_date=due_date_value,
-                reference=row['Job Invoice #'],
-                status="DRAFT",
-                line_amount_types=LineAmountTypes.EXCLUSIVE
-            )
+            return invoice_data
+            
         except Exception as e:
             logger.error(f"Failed to create invoice object: {str(e)}")
             raise
@@ -425,21 +209,32 @@ if __name__ == '__main__':
                 logger.error("Failed to authenticate with Xero")
                 return False
             
-            # Get and process sheet data
-            sheet_data = self.get_sheet_data()
-            df = self.process_spreadsheet_data(sheet_data)
-            
             # Get contact ID
-            try:
-                contacts = self.accounting_api.get_contacts(self.tenant_id)
-                if not contacts.contacts:
-                    logger.error("No contacts found in Xero")
-                    return False
-                contact_id = contacts.contacts[0].contact_id
-                logger.info(f"Using contact ID: {contact_id}")
-            except ApiException as e:
-                logger.error(f"Failed to get contacts: {str(e)}")
+            contact_id = self.get_contact_id()
+            if not contact_id:
+                logger.error("Failed to get contact ID")
                 return False
+            
+            # Get spreadsheet data
+            spreadsheet_id = os.environ.get('GOOGLE_SHEETS_SPREADSHEET_ID', '').strip('"')
+            if not spreadsheet_id:
+                logger.error("Spreadsheet ID not found in environment variables")
+                return False
+            
+            # Fetch sheet data
+            result = self.sheets_service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range='Sheet1'
+            ).execute()
+            
+            values = result.get('values', [])
+            if not values:
+                logger.error("No data found in spreadsheet")
+                return False
+            
+            # Process data
+            df = pd.DataFrame(values[1:], columns=values[0])
+            logger.info(f"Processing {len(df)} invoices")
             
             # Process each row
             results = []
@@ -447,11 +242,13 @@ if __name__ == '__main__':
                 try:
                     logger.info(f"Processing invoice {row['Job Invoice #']}")
                     
-                    # Create and submit invoice
-                    invoice = self.create_invoice(row, contact_id)
+                    # Create invoice data
+                    invoice_data = self.create_invoice(row, contact_id)
+                    
+                    # Submit to Xero
                     response = self.accounting_api.create_invoices(
-                        self.tenant_id,
-                        invoices=Invoices(invoices=[invoice]),
+                        xero_tenant_id=self.tenant_id,
+                        invoices=invoice_data,
                         summarize_errors=False
                     )
                     
@@ -461,10 +258,7 @@ if __name__ == '__main__':
                         'shipment': row['Shipment'],
                         'job_invoice': row['Job Invoice #'],
                         'status': 'success',
-                        'type': row['Type'],
-                        'invoice_id': invoice_id,
-                        'amount': float(row.get('Total Invoice', 0)),
-                        'date': row['Inv. Date']
+                        'invoice_id': invoice_id
                     })
                     logger.info(f"Successfully created invoice {invoice_id}")
                     
@@ -474,16 +268,14 @@ if __name__ == '__main__':
                         'shipment': row['Shipment'],
                         'job_invoice': row['Job Invoice #'],
                         'status': 'error',
-                        'type': row['Type'],
                         'error': str(e)
                     })
             
             # Log summary
             successful = sum(1 for r in results if r['status'] == 'success')
             failed = sum(1 for r in results if r['status'] == 'error')
-            total_amount = sum(float(r.get('amount', 0)) for r in results if r['status'] == 'success')
             
-            logger.info(f"Processing complete. Successful: {successful}, Failed: {failed}, Total Amount: {total_amount}")
+            logger.info(f"Processing complete. Successful: {successful}, Failed: {failed}")
             return True
             
         except Exception as e:

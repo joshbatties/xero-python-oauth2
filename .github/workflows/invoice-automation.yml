@@ -48,6 +48,7 @@ jobs:
       env:
         XERO_CLIENT_ID: ${{ secrets.XERO_CLIENT_ID }}
         XERO_CLIENT_SECRET: ${{ secrets.XERO_CLIENT_SECRET }}
+        XERO_TENANT_ID: ${{ secrets.XERO_TENANT_ID }}
         GOOGLE_SHEETS_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
       run: python app.py
 
