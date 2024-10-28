@@ -28,10 +28,13 @@ jobs:
 
     - name: Create and verify credentials
       run: |
-        # Create credentials.json
-        echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
+        # Create credentials.json with proper formatting
+        echo '${{ secrets.GOOGLE_CREDENTIALS }}' | python -c "
+        import json, sys
+        print(json.dumps(json.loads(sys.stdin.read()), indent=2))
+        " > credentials.json
         
-        # Verify JSON formatting
+        # Verify credentials file
         echo "Verifying credentials.json format..."
         python -c "
         import json
@@ -46,8 +49,7 @@ jobs:
                     sys.exit(1)
                 print('JSON format is valid')
                 print('Required keys present:', required_keys)
-                print('Project ID:', creds['project_id'])
-                print('Client email:', creds['client_email'])
+                print('Service account email:', creds['client_email'])
         except json.JSONDecodeError as e:
             print(f'Invalid JSON format: {str(e)}')
             sys.exit(1)
