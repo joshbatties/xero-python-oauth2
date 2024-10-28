@@ -229,7 +229,7 @@ def main():
         )
 
         # Set the token values
-        oauth2_token.set_token({
+        oauth2_token.token({
             'access_token': access_token,
             'refresh_token': refresh_token,
             'expires_at': time.time() - 3600  # Set to a time in the past to force refresh
