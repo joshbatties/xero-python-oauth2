@@ -21,6 +21,8 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        pip install numpy==1.24.3
+        pip install pandas==1.5.3
         pip install -r requirements.txt
 
     - name: Create config files
@@ -39,4 +41,4 @@ jobs:
       with:
         name: execution-logs
         path: invoice_automation.log
-        retention-days: 7  # Optional: specify how long to keep the logs
+        retention-days: 7
