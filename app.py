@@ -4,7 +4,6 @@ import logging
 from datetime import datetime, timezone
 import traceback
 from typing import Optional
-import json
 
 import pandas as pd
 from dateutil import parser
@@ -27,28 +26,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class TokenStorage:
-    @staticmethod
-    def save_token(token):
-        """Save token to file"""
-        with open('xero_token.json', 'w') as f:
-            json.dump(token, f)
-        logger.info("Token saved successfully")
-
-    @staticmethod
-    def get_token():
-        """Get token from file"""
-        try:
-            with open('xero_token.json', 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return None
-
 class InvoiceProcessor:
     def __init__(self):
-        # Initialize token storage
-        self.token_storage = TokenStorage()
-        
         # Initialize Xero client
         self.api_client = self._initialize_xero_client()
         self.tenant_id = None
@@ -71,6 +50,12 @@ class InvoiceProcessor:
             'TRN': 'Transportation'
         }
 
+    def _save_token(self, token):
+        """Token saver function for OAuth2"""
+        logger.info("Saving token...")
+        self._current_token = token
+        return token
+
     def _initialize_xero_client(self) -> ApiClient:
         """Initialize and return Xero API client"""
         try:
@@ -86,20 +71,23 @@ class InvoiceProcessor:
             
             logger.info("Initializing Xero client...")
             
-            token = OAuth2Token(
+            # Create OAuth2Token instance
+            oauth2_token = OAuth2Token(
                 client_id=client_id,
                 client_secret=client_secret
             )
             
+            # Create Configuration
             config = Configuration(
                 debug=False,
-                oauth2_token=token
+                oauth2_token=oauth2_token
             )
             
+            # Create API client
             api_client = ApiClient(config, pool_threads=1)
             
-            # Set up token saver
-            api_client.oauth2_token_saver = self.token_storage.save_token
+            # Set the token saver
+            api_client.oauth2_token_saver = self._save_token
             
             return api_client
             
