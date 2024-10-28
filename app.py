@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 import traceback
 from typing import Optional
+import json
 
 import pandas as pd
 from dateutil import parser
@@ -26,8 +27,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class TokenStorage:
+    @staticmethod
+    def save_token(token):
+        """Save token to file"""
+        with open('xero_token.json', 'w') as f:
+            json.dump(token, f)
+        logger.info("Token saved successfully")
+
+    @staticmethod
+    def get_token():
+        """Get token from file"""
+        try:
+            with open('xero_token.json', 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return None
+
 class InvoiceProcessor:
     def __init__(self):
+        # Initialize token storage
+        self.token_storage = TokenStorage()
+        
         # Initialize Xero client
         self.api_client = self._initialize_xero_client()
         self.tenant_id = None
@@ -63,7 +84,7 @@ class InvoiceProcessor:
             client_id = client_id.strip('"')
             client_secret = client_secret.strip('"')
             
-            logger.info(f"Initializing Xero client...")
+            logger.info("Initializing Xero client...")
             
             token = OAuth2Token(
                 client_id=client_id,
@@ -75,7 +96,12 @@ class InvoiceProcessor:
                 oauth2_token=token
             )
             
-            return ApiClient(config, pool_threads=1)
+            api_client = ApiClient(config, pool_threads=1)
+            
+            # Set up token saver
+            api_client.oauth2_token_saver = self.token_storage.save_token
+            
+            return api_client
             
         except Exception as e:
             logger.error(f"Failed to initialize Xero client: {str(e)}")
@@ -104,12 +130,11 @@ class InvoiceProcessor:
     def authenticate_xero(self) -> bool:
         """Authenticate with Xero and get tenant ID"""
         try:
-            # Get access token using client credentials
             logger.info("Authenticating with Xero...")
-            token = self.api_client.get_client_credentials_token()
             
-            # Set the token
-            self.api_client.configuration.oauth2_token = token
+            # Get access token using client credentials
+            token = self.api_client.get_client_credentials_token()
+            logger.info("Successfully obtained access token")
             
             # Initialize the APIs with the authenticated client
             identity_api = IdentityApi(self.api_client)
@@ -128,7 +153,7 @@ class InvoiceProcessor:
             
         except Exception as e:
             logger.error(f"Failed to authenticate with Xero: {str(e)}")
-            raise
+            return False
 
     def get_contact_id(self) -> Optional[str]:
         """Get the first contact ID from Xero"""
