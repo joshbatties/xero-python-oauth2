@@ -16,7 +16,7 @@ def create_sheets_service():
     """Create and return a Google Sheets service instance"""
     SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
     try:
-        credentials_info = json.loads(os.getenv('GOOGLE_SHEETS_CREDENTIALS'))
+        credentials_info = json.loads(os.getenv('GOOGLE_CREDENTIALS'))
         credentials = service_account.Credentials.from_service_account_info(
             credentials_info, scopes=SCOPES
         )
