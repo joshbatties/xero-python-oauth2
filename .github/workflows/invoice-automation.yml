@@ -2,62 +2,34 @@ name: Invoice Automation
 
 on:
   schedule:
-    # Runs at 7:10 AM Melbourne time (21:10 UTC previous day)
-    - cron: '10 21 * * *'
-  workflow_dispatch:  # Allows manual trigger
+    - cron: '10 20 * * *'  # 7:10 AM Melbourne Time in UTC (adjusted for daylight saving)
+  workflow_dispatch:
 
 jobs:
-  create-invoices:
+  build:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.9'
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install wheel
-        pip install numpy==1.24.3
-        pip install pandas==1.5.3
-        pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
 
-    - name: Create credentials file
-      run: |
-        echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
-        
-        # Verify credentials file
-        echo "Verifying credentials.json format..."
-        python -c "
-        import json
-        import sys
-        try:
-            with open('credentials.json', 'r') as f:
-                creds = json.load(f)
-                print('Credentials file is valid JSON')
-        except Exception as e:
-            print(f'Error: {str(e)}')
-            sys.exit(1)
-        "
-
-    - name: Run invoice creation
-      env:
-        XERO_CLIENT_ID: ${{ secrets.XERO_CLIENT_ID }}
-        XERO_CLIENT_SECRET: ${{ secrets.XERO_CLIENT_SECRET }}
-        XERO_TENANT_ID: ${{ secrets.XERO_TENANT_ID }}
-        GOOGLE_SHEETS_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
-      run: python app.py
-
-    - name: Upload logs
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: execution-logs
-        path: |
-          invoice_automation.log
-          *.log
-        retention-days: 7
+      - name: Run Invoice Automation Script
+        env:
+          XERO_CLIENT_ID: ${{ secrets.XERO_CLIENT_ID }}
+          XERO_CLIENT_SECRET: ${{ secrets.XERO_CLIENT_SECRET }}
+          XERO_ACCESS_TOKEN: ${{ secrets.XERO_ACCESS_TOKEN }}
+          XERO_REFRESH_TOKEN: ${{ secrets.XERO_REFRESH_TOKEN }}
+          XERO_TENANT_ID: ${{ secrets.XERO_TENANT_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
+          GOOGLE_SHEETS_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
+        run: |
+          python main.py
